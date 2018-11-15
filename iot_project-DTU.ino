@@ -2,10 +2,17 @@
 
 #define CONSOLE_STREAM SERIAL_PORT_MONITOR
 #define LORA_STREAM Serial2
+#define COMMON_ANODE
+#define CO2_SENSOR A1
 
 // Variables will contain your personal OTAA Activation Keys
 uint8_t devEUI[8] ;   // Device EUI
 uint8_t appEUI[8] = { 0x70, 0xB3, 0xD5, 0x7E, 0xD0, 0x01, 0x33, 0x81 };
+
+//Romain' app Key
+//const uint8_t appKey[16] = {0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88, 0x00, 0x04, 0xA3, 0x0B, 0x00, 0x20, 0x26, 0x22} ;
+
+// Loïc's app Key
 const uint8_t appKey[16] = {0x32, 0x37, 0x71, 0x7B, 0x37, 0xA8, 0x34, 0xA5, 0xF4, 0x1D, 0xF0, 0x33, 0xCD, 0x93, 0xD8, 0x91} ;
 
 
@@ -13,15 +20,18 @@ void setup()
 {
   while (!CONSOLE_STREAM && (millis() < 10000)) ;
   CONSOLE_STREAM.begin(115200) ;
-  
+
   // Temperature sensor
   pinMode(TEMP_SENSOR, INPUT) ;
   analogReadResolution(12) ;
 
+  // Co2 sensor
+  pinMode(CO2_SENSOR, INPUT);
+
   // LED
   pinMode(LED_BUILTIN, OUTPUT) ;
   pinMode(LED_RED, OUTPUT) ;
-  pinMode(LED_GREEN, OUTPUT) ; 
+  pinMode(LED_GREEN, OUTPUT) ;
   pinMode(LED_BLUE, OUTPUT) ;
 
   // LoRa
@@ -34,71 +44,54 @@ void setup()
   delay(100) ;
   digitalWrite(LORA_RESET, HIGH) ;
   delay(1000) ;
-  
+
   // empty the buffer
   LORA_STREAM.end() ;
   LORA_STREAM.begin(LoRaBee.getDefaultBaudRate()) ;
   LoRaBee.init(LORA_STREAM, -1) ;
 
-  uint8_t hwEUI[8] ;
-  uint8_t len = LoRaBee.getHWEUI(hwEUI, sizeof(hwEUI)) ;
-  if (len == 0) { CONSOLE_STREAM.println("Error to get HwEUI") ; while(1) ; }
-  memcpy(devEUI, hwEUI, sizeof(hwEUI)) ;
- 
+  //get the devid
+  uint8_t len = LoRaBee.getHWEUI(devEUI, sizeof(devEUI)) ;
+  if (len == 0) {
+    CONSOLE_STREAM.println("Error to get HwEUI") ;
+    while (1) ;
+  }
+
+  //Display informations
   CONSOLE_STREAM.println() ;
   CONSOLE_STREAM.print("devEUI = ") ; displayArrayInOneLine(devEUI, sizeof(devEUI)) ;
   CONSOLE_STREAM.print("appEUI = ") ; displayArrayInOneLine(appEUI, sizeof(appEUI)) ;
   CONSOLE_STREAM.print("appKey = ") ; displayArrayInOneLine(appKey, sizeof(appKey)) ;
 
-  bool joinRes = 0 ;
-  uint8_t joinTentative = 0 ;
-  do
-  {
-    setRgbColor(0x00, 0x00, 0xFF) ;
-    CONSOLE_STREAM.println("Try to join the LoRa network through OTA Activation") ;
-    joinRes = LoRaBee.initOTA(LORA_STREAM, devEUI, appEUI, appKey, true);
-    
-    CONSOLE_STREAM.println(joinRes ? "Join Accepted." : "Join Failed! Trying again after 3 seconds.") ;
-    if (!joinRes)
-    {
-      setRgbColor(0xFF, 0x00, 0x00) ;
-      joinTentative ++ ;
-      delay(3000) ;
-    }
-    if (joinTentative == -1)
-    {
-      CONSOLE_STREAM.println("Not able to join the network. Stay here forever!") ;
-      while(1)
-      {
-        setRgbColor(0xFF, 0x00, 0x00) ;
-        delay(250) ;
-        setRgbColor(0x00, 0x99, 0xFF) ;
-        delay(250) ;
-        setRgbColor(0xFF, 0xFF, 0xFF) ;
-        delay(250) ;
-      }
-    }
-  } while (joinRes == 0) ;
-  setRgbColor(0x00, 0xFF, 0x00) ;
-  delay(3000) ;
+  joinLoraNetwork();
 }
+void(* resetFunc) (void) = 0;
 
 void loop()
 {
-  int sensorValue = analogRead(TEMP_SENSOR) ;
-  float mVolts = (float)sensorValue * 3300 / 4096.0 ;
-  float temp = (mVolts - 500) ;
-  temp = temp / 10.0 ;
+  // Get the temperature
+  float temp = getTemperature();
   CONSOLE_STREAM.print("Temperature = ") ;
   CONSOLE_STREAM.print(temp) ;
   CONSOLE_STREAM.println(" C") ;
-  delay(3000) ;
-  uint8_t res = 100 ; //Set to a value that will not return any message in the switch case below.
+
+  // Get the Co2 Level
+  float co2 = getCo2();
+
+  CONSOLE_STREAM.print("Co2 Level = ") ;
+  CONSOLE_STREAM.print(co2) ;
+  CONSOLE_STREAM.println(" %") ;
+
   char payload[10];
   sprintf(payload, "%.2f", temp);
-  res = LoRaBee.sendReqAck(2, (const uint8_t*)payload, strlen(payload),3);
-  delay(20000); 
-  
+  // Send on canal 1 with 3 retry
+  int res = LoRaBee.sendReqAck(1, (const uint8_t*)payload, strlen(payload), 5);
+  checkResult(res);
+
+  delay(20000);
+}
+
+void checkResult(int res) {
   switch (res)
   {
     case NoError:
@@ -122,8 +115,14 @@ void loop()
       break ;
     case InternalError:
       CONSOLE_STREAM.println("Oh No! This shouldn't happen. Something is really wrong! Try restarting the device!\r\nThe program will now halt.") ;
+      resetFunc();
       setRgbColor(0xFF, 0x00, 0x00) ;
-      while (1) { delay(250) ; setRgbColor(0x00, 0x00, 0x00) ; delay(250) ; setRgbColor(0xFF, 0x00, 0x00) ; } ;
+      while (1) {
+        delay(250) ;
+        setRgbColor(0x00, 0x00, 0x00) ;
+        delay(250) ;
+        setRgbColor(0xFF, 0x00, 0x00) ;
+      } ;
       break ;
     case Busy:
       CONSOLE_STREAM.println("The device is busy. Sleeping for 10 extra seconds.");
@@ -135,9 +134,9 @@ void loop()
       while (1) {} ;
       break ;
     case NotConnected:
-      CONSOLE_STREAM.println("The device is not connected to the network. Please connect to the network before attempting to send data.\r\nThe program will now halt.");
+      CONSOLE_STREAM.println("The device is not connected to the network. Please connect to the network before attempting to send data.\r\nThe program will now try to reconnect.");
       setRgbColor(0xFF, 0x00, 0x00) ;
-      while (1) {} ;
+      joinLoraNetwork();
       break ;
     case NoAcknowledgment:
       CONSOLE_STREAM.println("There was no acknowledgment sent back!");
@@ -146,8 +145,49 @@ void loop()
     default:
       break ;
   }
-  // Step 5.4 Add a 20 sec delay before restarting the loop()
-  // ### Your code here ###
+}
+// --------------------------------------------------------------------------
+// Join the LORA network through OTA Activation
+// --------------------------------------------------------------------------
+float getTemperature() {
+  int sensorValue = analogRead(TEMP_SENSOR) ;
+  float mVolts = (float)sensorValue * 3300 / 4096.0 ;
+  float temp = (mVolts - 500) ;
+  temp = temp / 10.0;
+
+  return temp;
+}
+
+
+float getCo2() {
+  int sensorValue = analogRead(CO2_SENSOR);
+  float mVolts = (float)sensorValue * 3300 / 4096.0 ;
+  float co2 = map(mVolts, 100, 3300, 0, 100);
+
+  return co2;
+}
+
+
+// --------------------------------------------------------------------------
+// Join the LORA network through OTA Activation
+// --------------------------------------------------------------------------
+void joinLoraNetwork() {
+  bool joinRes = 0 ;
+  do
+  {
+    setRgbColor(0x00, 0x00, 0xFF) ;
+    CONSOLE_STREAM.println("Try to join the LoRa network through OTA Activation") ;
+    joinRes = LoRaBee.initOTA(LORA_STREAM, devEUI, appEUI, appKey, true);
+
+    CONSOLE_STREAM.println(joinRes ? "Join Accepted." : "Join Failed! Trying again after 3 seconds.") ;
+    if (!joinRes)
+    {
+      setRgbColor(0xFF, 0x00, 0x00) ;
+      delay(3000) ;
+    }
+  } while (joinRes == 0) ;
+  setRgbColor(0x00, 0xFF, 0x00) ;
+  delay(3000) ;
 }
 
 // --------------------------------------------------------------------------
@@ -167,25 +207,15 @@ void displayArrayInOneLine(const uint8_t tab[], uint8_t tabSize)
 // --------------------------------------------------------------------------
 // LED routines
 // --------------------------------------------------------------------------
-#define COMMON_ANODE  // LED driving method
+
 void setRgbColor(uint8_t red, uint8_t green, uint8_t blue)
 {
-  #ifdef COMMON_ANODE
-    red = 255 - red ;
-    green = 255 - green ;
-    blue = 255 - blue ;
-  #endif
+#ifdef COMMON_ANODE
+  red = 255 - red ;
+  green = 255 - green ;
+  blue = 255 - blue ;
+#endif
   analogWrite(LED_RED, red) ;
   analogWrite(LED_GREEN, green) ;
-  analogWrite(LED_BLUE, blue) ;  
-}
-
-void turnBlueLedOn()
-{
-  digitalWrite(LED_BUILTIN, HIGH) ;
-}
-
-void turnBlueLedOff()
-{
-  digitalWrite(LED_BUILTIN, LOW) ;
+  analogWrite(LED_BLUE, blue) ;
 }
