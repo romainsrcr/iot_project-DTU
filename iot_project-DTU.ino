@@ -65,7 +65,6 @@ void setup()
 
   joinLoraNetwork();
 }
-void(* resetFunc) (void) = 0;
 
 void loop()
 {
@@ -75,17 +74,25 @@ void loop()
   CONSOLE_STREAM.print(temp) ;
   CONSOLE_STREAM.println(" C") ;
 
+  char payload[10];
+  sprintf(payload, "%.2f", temp);
+  // Send on canal 1 with 3 retry
+  //int res = LoRaBee.sendReqAck(1, (const uint8_t*)payload, strlen(payload), 5);
+  int res = LoRaBee.send(1, (const uint8_t*)payload, strlen(payload));
+  checkResult(res);
+
+  delay(20000);
+
   // Get the Co2 Level
   float co2 = getCo2();
 
   CONSOLE_STREAM.print("Co2 Level = ") ;
   CONSOLE_STREAM.print(co2) ;
-  CONSOLE_STREAM.println(" %") ;
+  CONSOLE_STREAM.println(" ppm") ;
 
-  char payload[10];
-  sprintf(payload, "%.2f", temp);
-  // Send on canal 1 with 3 retry
-  int res = LoRaBee.sendReqAck(1, (const uint8_t*)payload, strlen(payload), 5);
+  sprintf(payload, "%.2f", co2);
+  res = LoRaBee.sendReqAck(2, (const uint8_t*)payload, strlen(payload), 5);
+  res = LoRaBee.send(2, (const uint8_t*)payload, strlen(payload));
   checkResult(res);
 
   delay(20000);
@@ -115,14 +122,7 @@ void checkResult(int res) {
       break ;
     case InternalError:
       CONSOLE_STREAM.println("Oh No! This shouldn't happen. Something is really wrong! Try restarting the device!\r\nThe program will now halt.") ;
-      resetFunc();
-      setRgbColor(0xFF, 0x00, 0x00) ;
-      while (1) {
-        delay(250) ;
-        setRgbColor(0x00, 0x00, 0x00) ;
-        delay(250) ;
-        setRgbColor(0xFF, 0x00, 0x00) ;
-      } ;
+      joinLoraNetwork();
       break ;
     case Busy:
       CONSOLE_STREAM.println("The device is busy. Sleeping for 10 extra seconds.");
@@ -162,8 +162,7 @@ float getTemperature() {
 float getCo2() {
   int sensorValue = analogRead(CO2_SENSOR);
   float mVolts = (float)sensorValue * 3300 / 4096.0 ;
-  float co2 = map(mVolts, 100, 3300, 0, 100);
-
+  float co2 = map(mVolts, 0, 3300, 0, 10000);
   return co2;
 }
 
@@ -188,6 +187,8 @@ void joinLoraNetwork() {
   } while (joinRes == 0) ;
   setRgbColor(0x00, 0xFF, 0x00) ;
   delay(3000) ;
+
+
 }
 
 // --------------------------------------------------------------------------
